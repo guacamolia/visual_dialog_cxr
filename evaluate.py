@@ -2,12 +2,14 @@ import argparse
 import yaml
 
 import torch
+from pytorch_transformers import BertTokenizer
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from dataset.dataset import CXRVisDialDataset
+from dataset.vocabulary import Vocabulary
 from models.models import LateFusionModel, RecursiveAttentionModel, StackedAttentionModel
-from models.utils.utils import report_metric
+from utils import report_metric, load_embeddings, match_embeddings
 
 
 
@@ -37,23 +39,68 @@ if __name__ == "__main__":
                         required=True,
                         help="Output location where the weights are stored")
 
+    parser.add_argument("--embeddings",
+                        default=None,
+                        help="Whether pretrained embeddings should be used. "
+                             "If yes, the argument is a path to a pickled file.")
+
+    parser.add_argument("--bert_path",
+                        default=None,
+                        help="If using BERT embeddings, the location for the pre-trained bin model")
+
+    parser.add_argument("--model",
+                        default="lf",
+                        help="Model to use for training. Valid options are: `lf` (LateFusion), "
+                             "`rva` (RecursiveVisualAttention), and `san` (Stacked Attention Network)")
+
+
     args = parser.parse_args()
 
     with open(args.config_yml) as f:
         config = yaml.safe_load(f)
 
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     # ------------------------------------------------------------------------
     # DATASET & DATALOADER
     # ------------------------------------------------------------------------
+    if args.model == "rva":
+        mode = 'seq'
+    elif args.model == "lf" or args.model == "san":
+        mode = 'concat'
+    else:
+        raise ValueError("Unknown model")
 
-    test_dataset = CXRVisDialDataset(args.img_feats_test, args.test_json, args.word_counts)
+
+    # If word_counts are passed, use them to construct the vocabulary. If word embeddings are also passed,
+    # use them for initializing the embedding layer. Otherwise, use BERT
+    if args.word_counts is None:
+        use_bert = True
+        embeddings = None
+        bert_path = args.bert_path
+        train_vocabulary = BertTokenizer.from_pretrained('bert-base-cased').vocab
+    else:
+        train_vocabulary = Vocabulary(args.word_counts)
+        use_bert = False
+        bert_path = None
+        if args.embeddings is not None:
+            embeddings_dict = load_embeddings(args.embeddings)
+            embeddings = match_embeddings(train_vocabulary, embeddings_dict)
+            embeddings = torch.Tensor(embeddings).float().to(device)
+        else:
+            embeddings = None
+
+    test_dataset = CXRVisDialDataset(args.img_feats_test, args.test_json, args.word_counts, mode, views=config['views'])
     test_dataloader = DataLoader(test_dataset, batch_size=config['batch_size'])
 
     # ------------------------------------------------------------------------
     # SETUP
     # ------------------------------------------------------------------------
-    model = LateFusionModel(config, test_dataset.vocabulary)
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    if args.model == "lf":
+        model = LateFusionModel(config, train_vocabulary, args.embeddings)
+    elif args.model == "rva":
+        model = RecursiveAttentionModel(config, train_vocabulary, embeddings)
+    elif args.model == "san":
+        model = StackedAttentionModel(config, train_vocabulary, embeddings, use_bert, bert_path)
 
     model = model.to(device)
     model.load_state_dict(args.output_dir)

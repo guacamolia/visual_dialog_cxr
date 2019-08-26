@@ -1,10 +1,10 @@
 import torch
 import torch.nn.functional as F
+from pytorch_transformers import BertModel
 from torch import nn
 from torch.nn.utils.rnn import pack_padded_sequence
 
-from models.utils.utils import Q_ATT, H_ATT, V_Filter, GumbelSoftmax
-from models.utils.modules import RvA_MODULE
+from models.modules import Q_ATT, H_ATT, V_Filter, GumbelSoftmax, RvA_MODULE
 
 
 class LateFusionEncoder(nn.Module):
@@ -12,8 +12,10 @@ class LateFusionEncoder(nn.Module):
         """
 
         Args:
-            config:
-            vocabulary:
+            config (dict): Configuration dict with network params
+            vocabulary (Vocabulary): Mapping between tokens and their ids
+            embeddings (torch.Tensor): pre-trained embedding vectors matching token ids
+                If None, the embedding layer is initialized randomly
         """
         super().__init__()
 
@@ -33,7 +35,10 @@ class LateFusionEncoder(nn.Module):
         self.dropout = nn.Dropout(config['dropout'])
 
         # LAYERS
-        self.emb = nn.Embedding(len(vocabulary), self.emb_size, padding_idx=vocabulary.PAD_INDEX)
+        if embeddings is None:
+            self.emb = nn.Embedding(len(vocabulary), self.emb_size, padding_idx=vocabulary.PAD_INDEX)
+        else:
+            self.emb = nn.Embedding.from_pretrained(embeddings, freeze=True)
         self.hist_rnn = nn.LSTM(self.emb_size, self.lstm_size, batch_first=True)
         self.ques_rnn = nn.LSTM(self.emb_size, self.lstm_size, batch_first=True)
         self.img_lin = nn.Linear(self.img_size, self.lstm_size)
@@ -42,57 +47,66 @@ class LateFusionEncoder(nn.Module):
 
         
     def forward(self, image, history, question):
-        batch_size, num_rounds, _ = question.size()
+        """
+
+        Args:
+            image: [batch x image_dim x num_regions x num_regions]
+            history: [batch x max_history_len]
+            question: [batch x max_question_len]
+
+        Returns:
+            final representation of the dialog [batch_size x lstm_size]
+
+        """
+        batch_size, _ = question.size() # B x Lq
 
         # embed questions
-        ques_hidden = self.embed_question(question)
+        ques_hidden = self.embed_question(question) # [BxH]
 
         # embed history
-        hist_hidden = self.embed_history(history)
+        hist_hidden = self.embed_history(history) # [BxH]
 
         # project down image features
-        _, img_feat_size, _, _ = image.squeeze(1).size()
-        image = image.view(batch_size, img_feat_size, -1).permute(0, 2, 1)
-        image_features = self.img_lin(image)
-    
-        # repeat image feature vectors to be provided for every round
-        image_features = image_features.view(batch_size, 1, -1, self.lstm_size) \
-            .repeat(1, num_rounds, 1, 1).view(batch_size * num_rounds, -1, self.lstm_size)
-    
+        image = image.float()
+        if len(image.shape) == 5:
+            image = image.squeeze(1)
+
+        if len(image.size()) == 4:
+            _, img_feat_size, _, _ = image.size()
+            image = image.view(batch_size, img_feat_size, -1).permute(0, 2, 1) # [BxRxI]
+        else:
+            _, img_feat_size, _ = image.size()
+        image_features = self.img_lin(image)  # [BxRxH]
+
         # computing attention weights
-        projected_ques_features = ques_hidden.unsqueeze(1).repeat(1, image.shape[1], 1)
-        projected_ques_image = (projected_ques_features * image_features)
-        projected_ques_image = self.dropout(projected_ques_image)
-        image_attention_weights = self.attention_proj(projected_ques_image).squeeze(-1)
-        image_attention_weights = F.softmax(image_attention_weights, dim=-1)
+        projected_ques_features = ques_hidden.unsqueeze(1).repeat(1, image.shape[1], 1) # [BxRxH]
+        projected_ques_image = (projected_ques_features * image_features) # [BxRxH]
+        projected_ques_image = self.dropout(projected_ques_image) # [BxRxH]
+        image_attention_weights = self.attention_proj(projected_ques_image).squeeze(-1) # [BxR]
+        image_attention_weights = F.softmax(image_attention_weights, dim=-1) # [BxR]
 
         # multiply image features with their attention weights
-        image = image.view(batch_size, 1, -1, self.img_size).repeat(1, num_rounds, 1, 1) \
-            .view(batch_size * num_rounds, -1, self.img_size)
-        image_attention_weights = image_attention_weights.unsqueeze(-1).repeat(1, 1, self.img_size)
-        attended_image_features = (image_attention_weights * image).sum(1)
+        image_attention_weights = image_attention_weights.unsqueeze(-1).repeat(1, 1, self.img_size) # [BxRxI]
+        attended_image_features = (image_attention_weights * image).sum(1) # [BxI]
         image = attended_image_features
 
         # combining representations
-        fused_vector = torch.cat((image, ques_hidden.squeeze(0), hist_hidden.squeeze(0)), 1)
-        fused_vector = self.dropout(fused_vector)
-        fused_embedding = torch.tanh(self.fusion(fused_vector))
-        fused_embedding = fused_embedding.view(batch_size, num_rounds, -1)
+        fused_vector = torch.cat((image, ques_hidden.squeeze(0), hist_hidden.squeeze(0)), 1) # [Bx I+2H]
+        fused_vector = self.dropout(fused_vector) # [Bx I+2H]
+        fused_embedding = torch.tanh(self.fusion(fused_vector)) # [BxH]
         return fused_embedding
 
     def embed_question(self, question):
         """
 
         Args:
-            question:
+            question: [batch x max_history_len]
 
         Returns:
+            question embedding [batch x lstm_size]
 
         """
-        batch_size, num_rounds, _ = question.size()
-
-        # reshaping
-        question = question.view(batch_size * num_rounds, -1)
+        batch_size, _ = question.size() # [B x Lq]
 
         # packing for RNN
         batch_lengths = torch.sum(torch.ne(question, self.vocabulary.PAD_INDEX), dim=1)
@@ -105,10 +119,7 @@ class LateFusionEncoder(nn.Module):
         return ques_hidden
 
     def embed_history(self, history):
-        batch_size, num_rounds, _ = history.size()
-
-        # reshaping
-        history = history.view(batch_size * num_rounds, -1)
+        batch_size, _ = history.size() # [B x Lh]
 
         # packing for RNN
         batch_lengths = torch.sum(torch.ne(history, self.vocabulary.PAD_INDEX), dim=1)
@@ -122,13 +133,14 @@ class LateFusionEncoder(nn.Module):
 
 
 class RvAEncoder(nn.Module):
-    # https://github.com/yuleiniu/rva
     def __init__(self, config, vocabulary, embeddings=None):
         """
 
         Args:
-            config:
-            vocabulary:
+            config (dict): Configuration dict with network params
+            vocabulary (Vocabulary): Mapping between tokens and their ids
+            embeddings (torch.Tensor): pre-trained embedding vectors matching token ids
+                If None, the embedding layer is initialized randomly
         """
         super().__init__()
 
@@ -149,7 +161,7 @@ class RvAEncoder(nn.Module):
         if embeddings is None:
             self.emb = nn.Embedding(len(vocabulary), self.emb_size, padding_idx=vocabulary.PAD_INDEX)
         else:
-            self.emb = nn.Embedding.from_pretrained(embeddings, freeze=False)
+            self.emb = nn.Embedding.from_pretrained(embeddings, freeze=True)
         self.hist_rnn = nn.LSTM(self.emb_size, self.lstm_size, batch_first=True, bidirectional=True)
         self.ques_rnn = nn.LSTM(self.emb_size, self.lstm_size, batch_first=True, bidirectional=True)
 
@@ -184,8 +196,9 @@ class RvAEncoder(nn.Module):
                 if m.bias is not None:
                     nn.init.constant_(m.bias.data, 0)
 
-    def forward(self, image, history, question):
-        caption = history[:, :1, :]
+    def forward(self, image, history, question, caption, turn):
+        # caption = history[:, :1, :]
+        batch_size = history.shape[0]
 
         # embed questions
         ques_word_embed, ques_word_encoded, ques_not_pad, ques_encoded = self.init_q_embed(question)
@@ -201,9 +214,12 @@ class RvAEncoder(nn.Module):
         cap_ref_feat, _ = self.Q_ATT_ref(cap_word_embed, cap_word_encoded, cap_not_pad)
 
         # RvA module
-        image = image.squeeze(1)
-        batch_size, img_feat_size, _, _ = image.size()
-        image = image.view(batch_size, img_feat_size, -1).permute(0, 2, 1)
+        image = image.float()
+        if len(image.size()) == 4:
+            _, img_feat_size, _, _ = image.size()
+            image = image.view(batch_size, img_feat_size, -1).permute(0, 2, 1) # [BxRxI]
+        else:
+            _, img_feat_size, _ = image.size()
         ques_feat = (cap_ref_feat, ques_ref_feat, ques_encoded)
         img_att, att_set = self.RvA_MODULE(image, ques_feat, hist_encoded)
         img_feat = torch.bmm(img_att, image)
@@ -217,7 +233,9 @@ class RvAEncoder(nn.Module):
         fused_vector = torch.cat((img_ans_feat, ques_ans_feat, hist_ans_feat), -1)
         fused_embedding = torch.tanh(self.fusion(fused_vector))
 
-        return fused_embedding
+        output_vector = torch.stack([fused_embedding[i, turn[i], :] for i in range(batch_size)])
+
+        return output_vector
 
     def init_q_embed(self, question):
         batch_size, num_rounds, max_len = question.size()
@@ -239,7 +257,7 @@ class RvAEncoder(nn.Module):
                                                                       total_length=max_len)
 
         # reshaping
-        ques_word_embed = ques_word_embed.view(-1, num_rounds, max_len, ques_word_embed.size(-1))
+        ques_word_embed = ques_word_embed.view(-1, num_rounds,  max_len, ques_word_embed.size(-1))
         ques_word_encoded = ques_word_encoded.view(-1, num_rounds, max_len, ques_word_encoded.size(-1))
         ques_not_pad = ques_not_pad.view(-1, num_rounds, max_len).float()
         ques_encoded = ques_encoded.view(batch_size, num_rounds, -1)
@@ -272,11 +290,11 @@ class RvAEncoder(nn.Module):
 
     def init_cap_embed(self, caption):
 
-        batch_size, _, max_len = caption.shape
-        cap_word_embed = self.emb(caption.squeeze(1))
+        batch_size, max_len = caption.shape
+        cap_word_embed = self.emb(caption)
 
         # packing
-        cap_not_pad = torch.ne(caption.view(batch_size, -1), self.vocabulary.PAD_INDEX)
+        cap_not_pad = torch.ne(caption, self.vocabulary.PAD_INDEX)
         batch_lengths = torch.sum(cap_not_pad, dim=1)
         cap_packed = pack_padded_sequence(cap_word_embed, batch_lengths, batch_first=True, enforce_sorted=False)
 
@@ -295,22 +313,36 @@ class RvAEncoder(nn.Module):
 
 
 class SANEncoder(nn.Module):
-    # TODO include CNN for the question?
-    def __init__(self, config, vocabulary, embeddings=None):
+    def __init__(self, config, vocabulary, embeddings=None, use_bert=False, bert_path=None):
         """
 
         Args:
-            config:
-            vocabulary:
+            config (dict): Configuration dict with network params
+            vocabulary (Vocabulary): Mapping between tokens and their ids
+            embeddings (torch.Tensor): pre-trained embedding vectors matching token ids
+                If None, the embedding layer is initialized randomly
+            use_bert (bool): If true, pre-trained BERT is loaded from `bert_path`
+            bert_path (str): Path to pre-trained binary BERT model
         """
         super().__init__()
 
+        self.use_bert = use_bert
+
         # SIZES
-        if embeddings is None:
-            self.emb_size = config['emb_size']
+        if not self.use_bert:
+            if embeddings is None:
+                self.emb_size = config['emb_size']
+            else:
+                self.emb_size = embeddings.shape[1]
+            self.lstm_size = config['lstm_size']
+
         else:
-            self.emb_size = embeddings.shape[1]
-        self.lstm_size = config['lstm_size']
+            model_state_dict = torch.load(bert_path)
+            self.bert = BertModel.from_pretrained('bert-base-cased', state_dict=model_state_dict)
+            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            self.bert.to(device)
+            self.lstm_size = self.bert.config.hidden_size
+
         self.img_size = config['img_feature_size']
         self.hidden_size = config['hidden_size']
 
@@ -323,68 +355,110 @@ class SANEncoder(nn.Module):
         # LAYERS
 
         # embedding layers
-        if embeddings is None:
-            self.emb = nn.Embedding(len(vocabulary), self.emb_size, padding_idx=vocabulary.PAD_INDEX)
-        else:
-            self.emb = nn.Embedding.from_pretrained(embeddings, freeze=False)
-        self.ques_rnn = nn.LSTM(self.emb_size, self.lstm_size, batch_first=True)
+        if not self.use_bert:
+            if embeddings is None:
+                self.emb = nn.Embedding(len(vocabulary), self.emb_size, padding_idx=vocabulary.PAD_INDEX)
+            else:
+                self.emb = nn.Embedding.from_pretrained(embeddings, freeze=True)
+
+            self.ques_rnn = nn.LSTM(self.emb_size, self.lstm_size, batch_first=True)
+            self.hist_rnn = nn.LSTM(self.emb_size, self.lstm_size, batch_first=True)
+            # self.cap_rnn = nn.LSTM(self.emb_size, self.lstm_size, batch_first=True)
+
         self.img_lin = nn.Linear(self.img_size, self.lstm_size)
 
         # first attention layer
         self.ques_fc_1 = nn.Linear(self.lstm_size, self.hidden_size)
+        self.hist_fc_1 = nn.Linear(self.lstm_size, self.hidden_size)
+        # self.cap_fc_1 = nn.Linear(self.lstm_size, self.hidden_size)
         self.image_fc_1 = nn.Linear(self.lstm_size, self.hidden_size, bias=False)
         self.fc_att_1 = nn.Linear(self.hidden_size, 1)
 
         # second attention layer
-        self.ques_fc_2 = nn.Linear(self.hidden_size, self.hidden_size)
+        self.ques_fc_2 = nn.Linear(self.lstm_size, self.hidden_size)
         self.image_fc_2 = nn.Linear(self.lstm_size, self.hidden_size, bias=False)
         self.fc_att_2 = nn.Linear(self.hidden_size, 1)
 
         # final
-        self.final = nn.Linear(self.hidden_size, self.lstm_size)
+        self.final = nn.Linear(self.lstm_size, self.lstm_size)
 
         # ACTIVATIONS
         self.tanh = nn.Tanh()
         self.softmax = nn.Softmax(dim=1)
 
 
-    def forward(self, image, history, question):
-        # image dimension 1 -> squeeze?
+    def forward(self, image, history, question, caption):
 
-        # Question embedding
-        batch_size, num_rounds, max_sequence_length = question.size()
+        batch_size = history.shape[0]
 
-        question = question.view(batch_size * num_rounds, max_sequence_length)
-        ques_batch_lengths = torch.sum(torch.ne(question, self.vocabulary.PAD_INDEX), dim=1)
-        ques_packed = pack_padded_sequence(self.emb(question), ques_batch_lengths,
-                                           batch_first=True, enforce_sorted=False)
-        _, (ques_hidden, _) = self.ques_rnn(ques_packed)
-        ques_hidden = ques_hidden[-1] # BxH
+        ques_hidden = self.init_ques_embedding(question)
+        hist_hidden = self.init_hist_embedding(history)
+        # cap_hidden = self.init_cap_embedding(caption)
 
         # Image embedding
-        _, img_feat_size, _, _ = image.squeeze(1).size()
-        image = image.view(batch_size, img_feat_size, -1).transpose(1, 2)
+        image = image.float()
+        if len(image.size()) == 4:
+            _, img_feat_size, _, _ = image.size()
+            image = image.view(batch_size, img_feat_size, -1).permute(0, 2, 1) # [BxRxI]
+        else:
+            _, img_feat_size, _ = image.size()
 
-        image_features = self.tanh(self.img_lin(image))
-        image_features = self.dropout(image_features)
-
-        # repeat image feature vectors to be provided for every round
-        image_features = image_features.view(batch_size, 1, -1, self.lstm_size) \
-            .repeat(1, num_rounds, 1, 1).view(batch_size * num_rounds, -1, self.lstm_size)
+        image_features = self.tanh(self.img_lin(image)) # [BxRxH]
+        image_features = self.dropout(image_features) # [BxRxH]
 
         # Attention 1st
-        region_att_1 = self.tanh(self.image_fc_1(image_features) + self.ques_fc_1(ques_hidden).unsqueeze(1))
-        region_weights_1 = self.softmax(self.fc_att_1(region_att_1))
-        weighted_image_1 = (region_weights_1 * image_features).sum(1)
-        query_1 = weighted_image_1 + ques_hidden
+        region_att_1 = self.tanh(self.image_fc_1(image_features)  +
+                                 self.hist_fc_1(hist_hidden).unsqueeze(1)) # [BxRxH']
+        region_weights_1 = self.softmax(self.fc_att_1(region_att_1)) # [BxRx1]
+        weighted_image_1 = (region_weights_1 * image_features).sum(1) # [BxH]
+        query_1 = weighted_image_1 + ques_hidden # [BxH]
 
         # Attention 2nd
-        region_att_2 = self.tanh(self.image_fc_2(image_features) + self.ques_fc_2(query_1).unsqueeze(1))
-        region_weights_2 = self.softmax(self.fc_att_2(region_att_2))
-        weighted_image_2 = (region_weights_2 * image_features).sum(1)
-        query_2 = weighted_image_2 + query_1 # BN x H
+        region_att_2 = self.tanh(self.image_fc_2(image_features) + self.ques_fc_2(query_1).unsqueeze(1)) # [BxRxH']
+        region_weights_2 = self.softmax(self.fc_att_2(region_att_2)) # [BxRx1]
+        weighted_image_2 = (region_weights_2 * image_features).sum(1) # [BxH]
+        query_2 = weighted_image_2 + query_1 #  [BxH]
 
         # Final representation
         fused_embedding = self.final(query_2)
 
         return fused_embedding
+
+    def init_ques_embedding(self, question):
+        if not self.use_bert:
+            ques_batch_lengths = torch.sum(torch.ne(question, self.vocabulary.PAD_INDEX), dim=1)
+            ques_packed = pack_padded_sequence(self.emb(question), ques_batch_lengths,
+                                               batch_first=True, enforce_sorted=False)
+            _, (ques_hidden, _) = self.ques_rnn(ques_packed)
+            ques_hidden = ques_hidden[-1]  # BxH
+
+        else:
+            ques_hidden, _ = self.bert(question)
+            ques_hidden  = torch.mean(ques_hidden, dim=1)
+        return ques_hidden
+
+    def init_hist_embedding(self, history):
+        if not self.use_bert:
+            batch_lengths = torch.sum(torch.ne(history, self.vocabulary.PAD_INDEX), dim=1)
+            hist_packed = pack_padded_sequence(self.emb(history), batch_lengths,
+                                               batch_first=True, enforce_sorted=False)
+
+            _, (hist_hidden, _) = self.hist_rnn(hist_packed)
+            hist_hidden = hist_hidden[-1]
+        else:
+            hist_hidden, _ = self.bert(history)
+            hist_hidden = torch.mean(hist_hidden, dim=1)
+        return hist_hidden
+
+    def init_cap_embedding(self, caption):
+        if not self.use_bert:
+            cap_batch_lengths = torch.sum(torch.ne(caption, self.vocabulary.PAD_INDEX), dim=1)
+            cap_packed = pack_padded_sequence(self.emb(caption), cap_batch_lengths,
+                                               batch_first=True, enforce_sorted=False)
+
+            _, (cap_hidden, _) = self.cap_rnn(cap_packed)
+            cap_hidden = cap_hidden[-1]
+        else:
+            cap_hidden, _ = self.bert(caption)
+            cap_hidden = torch.mean(cap_hidden, dim=1)
+        return cap_hidden

@@ -1,14 +1,16 @@
 # Model
 emb_size: 128
-lstm_size: 256 # increase for SAN?
+lstm_size: 512 # increase for SAN?
 dropout: 0.5
 dropout_fc: 0.3
 hidden_size: 256
 
 # Training
 batch_size: 256
-num_epochs: 100
-learning_rate: 0.001
+num_epochs: 50
+learning_rate: 0.0002
 
 # Data
 img_feature_size: 2048
+views:
+  - "PA"
