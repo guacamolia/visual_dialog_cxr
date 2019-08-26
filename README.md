@@ -9,9 +9,18 @@ We provide the baseline models and results for the Visual Dialog task that uses 
 
 ## Prerequisites
 
-## Usage
 
-`python train.py`
+## Usage
+To train one of the three models (LateFusion model by default) run the train script as:
+
+```
+python train.py \ 
+    --train_json <path_to_train_json>  \
+    --val_json <path_to_val_json> \
+    --train_img_feats_dir <path_to_train_img_features> \
+    --val_img_feats_dir <path_to_val_img_features> \
+    --output_dir <path_to_output_dir>
+```
 
 ## References
 <a name="mimic">1</a>: [MIMIC-CXR: A LARGE PUBLICLY AVAILABLE DATABASE OF LABELED CHEST RADIOGRAPHS](https://arxiv.org/pdf/1901.07042.pdf)
