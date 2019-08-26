@@ -19,8 +19,13 @@ python train.py \
     --val_json <path_to_val_json> \
     --train_img_feats_dir <path_to_train_img_features> \
     --val_img_feats_dir <path_to_val_img_features> \
+    --word_counts <path_to_word_count_json> \
     --output_dir <path_to_output_dir>
 ```
+You can select a different model passing a `--model` argument with valid options being `lf`, `rva` and `san`.
+If you want to use pre-trained word embeddings, pass an extra argument as `--embeddings <path_to_pickled_embeddings_dict>`.
+
+
 
 ## References
 <a name="mimic">1</a>: [MIMIC-CXR: A LARGE PUBLICLY AVAILABLE DATABASE OF LABELED CHEST RADIOGRAPHS](https://arxiv.org/pdf/1901.07042.pdf)
