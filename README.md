@@ -8,7 +8,10 @@ We provide the baseline models and results for the Visual Dialog task that uses 
 - Stacked Attention Network<sup>[4](#san)</sup>. We make modifications to the architecture of the model to take into account the history of the dialog turns.
 
 ## Prerequisites
-
+Our models are implemented in PyTorch. Install dependencies as
+```
+pip install -r requirements.txt
+```
 
 ## Usage
 To train one of the three models (LateFusion model by default) run the train script as:
@@ -23,7 +26,7 @@ python train.py \
     --output_dir <path_to_output_dir>
 ```
 You can select a different model passing a `--model` argument with valid options being `lf`, `rva` and `san`.
-If you want to use pre-trained word embeddings, pass an extra argument as `--embeddings <path_to_pickled_embeddings_dict>`.
+If you want to use pre-trained word embeddings, pass an extra argument as `--embeddings <path_to_pickled_embeddings_dict>`. MedNLI domain-specific embeddings used in our experiments can be found [here](https://github.com/jgc128/mednli).
 
 
 
