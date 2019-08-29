@@ -30,6 +30,8 @@ python train.py \
 You can select a different model passing a `--model` argument with valid options being `lf`, `rva` and `san`.
 If you want to use pre-trained word embeddings, pass an extra argument as `--embeddings <path_to_pickled_embeddings_dict>`. MedNLI domain-specific embeddings used in our experiments can be found [here](https://github.com/jgc128/mednli).
 
+You can track the training progress through Tensorboard as `tensorboard --logdir ./logs --port 8008` and navigate to `localhost:8008` in your browser.
+
 For testing a trained model run the `evaluate.py` script as:
 
 ```
