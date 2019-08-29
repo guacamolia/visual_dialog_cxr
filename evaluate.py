@@ -35,18 +35,9 @@ if __name__ == "__main__":
                         default="config.yaml",
                         help="Location of the config yaml file")
 
-    parser.add_argument("--output_dir",
+    parser.add_argument("--model_path",
                         required=True,
                         help="Output location where the weights are stored")
-
-    parser.add_argument("--embeddings",
-                        default=None,
-                        help="Whether pretrained embeddings should be used. "
-                             "If yes, the argument is a path to a pickled file.")
-
-    parser.add_argument("--bert_path",
-                        default=None,
-                        help="If using BERT embeddings, the location for the pre-trained bin model")
 
     parser.add_argument("--model",
                         default="lf",
@@ -73,21 +64,7 @@ if __name__ == "__main__":
 
     # If word_counts are passed, use them to construct the vocabulary. If word embeddings are also passed,
     # use them for initializing the embedding layer. Otherwise, use BERT
-    if args.word_counts is None:
-        use_bert = True
-        embeddings = None
-        bert_path = args.bert_path
-        train_vocabulary = BertTokenizer.from_pretrained('bert-base-cased').vocab
-    else:
-        train_vocabulary = Vocabulary(args.word_counts)
-        use_bert = False
-        bert_path = None
-        if args.embeddings is not None:
-            embeddings_dict = load_embeddings(args.embeddings)
-            embeddings = match_embeddings(train_vocabulary, embeddings_dict)
-            embeddings = torch.Tensor(embeddings).float().to(device)
-        else:
-            embeddings = None
+    train_vocabulary = Vocabulary(args.word_counts)
 
     test_dataset = CXRVisDialDataset(args.img_feats_test, args.test_json, args.word_counts, mode, views=config['views'])
     test_dataloader = DataLoader(test_dataset, batch_size=config['batch_size'])
@@ -98,12 +75,13 @@ if __name__ == "__main__":
     if args.model == "lf":
         model = LateFusionModel(config, train_vocabulary, args.embeddings)
     elif args.model == "rva":
-        model = RecursiveAttentionModel(config, train_vocabulary, embeddings)
+        model = RecursiveAttentionModel(config, train_vocabulary)
     elif args.model == "san":
-        model = StackedAttentionModel(config, train_vocabulary, embeddings, use_bert, bert_path)
+        model = StackedAttentionModel(config, train_vocabulary)
 
     model = model.to(device)
-    model.load_state_dict(args.output_dir)
+    model.load_state_dict(torch.load(args.model_path))
+    print("Model weights restored")
     model.eval()
 
     # ------------------------------------------------------------------------
@@ -111,18 +89,23 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------------
     targets = []
     outputs = []
+    turns = []
     for batch in tqdm(test_dataloader, desc="Evaluation"):
-        image, history, question, options = batch['image'], batch['history'], batch['question'], batch['options']
-        image, history, question, options = image.to(device), history.to(device), \
-                                            question.to(device), options.to(device)
+        image, history, question, options, caption, turn = batch['image'], batch['history_ids'], \
+                                                           batch['question_ids'], batch['options'], \
+                                                           batch['caption_ids'], batch['turn']
+        image, history, question, options, caption, turn = image.to(device), history.to(device), question.to(device), \
+                                                           options.to(device), caption.to(device), turn.to(device)
 
-        output = model(image, history, question, options)
+        output = model(image, history, question, options, caption, turn)
         target = batch["answer_ind"].to(device)
 
         targets.append(target.detach().cpu().numpy())
         outputs.append(output.detach().cpu().numpy())
+        turns.append(turn.detach().cpu().numpy())
 
-    f1_scores, conf_matrix = report_metric(targets, outputs)
-    scores_dict = {'Yes': f1_scores[0], 'No': f1_scores[1], 'Maybe': f1_scores[2], 'N/A': f1_scores[3]}
+    f1_scores, conf_matrix, macro_f1, accuracies = report_metric(targets, outputs, turns)
+    scores_dict = {'Yes': f1_scores[0], 'No': f1_scores[1], 'Maybe': f1_scores[2],
+                   'N/A': f1_scores[3], 'macro_f1': macro_f1}
     print(conf_matrix)
     print(scores_dict)
