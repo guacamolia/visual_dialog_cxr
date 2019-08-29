@@ -30,6 +30,16 @@ python train.py \
 You can select a different model passing a `--model` argument with valid options being `lf`, `rva` and `san`.
 If you want to use pre-trained word embeddings, pass an extra argument as `--embeddings <path_to_pickled_embeddings_dict>`. MedNLI domain-specific embeddings used in our experiments can be found [here](https://github.com/jgc128/mednli).
 
+For testing a trained model run the `evaluate.py` script as:
+
+```
+python evaluate.py \
+    --test_json <path_to_visdial_json>
+    --img_feats_test <path_to_train_img_features>
+    --word_counts <path_to_train_word_count>
+    --model_path <path_to_saved_model_weights>
+    --model lf
+```
 
 
 ## References
