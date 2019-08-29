@@ -24,7 +24,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--test_img_feats",
                         required=False,
-                        help="Location of test images features")
+                        help="Location of test images features h5 file")
 
     parser.add_argument("--word_counts",
                         required=True,

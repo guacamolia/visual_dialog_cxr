@@ -6,6 +6,7 @@ import argparse
 import os
 import yaml
 from copy import deepcopy
+from datetime import datetime
 
 import numpy as np
 import torch
@@ -38,11 +39,11 @@ if __name__ == "__main__":
 
     parser.add_argument("--train_img_feats",
                         required=True,
-                        help="Location of train image features folder")
+                        help="Path to train image features h5 file")
 
     parser.add_argument("--val_img_feats",
                         required=True,
-                        help="Location of val image features folder")
+                        help="Path to val image features h5 file")
 
     parser.add_argument("--config_yml",
                         default="config.yaml",
@@ -71,6 +72,14 @@ if __name__ == "__main__":
                         help="Model to use for training. Valid options are: lf (LateFusion), "
                              "rva (RecursiveVisualAttention), and san (Stacked Attention Network)")
 
+    parser.add_argument("--log_dir",
+                        default='./logs',
+                        help="Path to the directory where TensorBoard logs will be stored for tracking training." )
+
+    parser.add_argument("--label",
+                        default="",
+                        help="Optional label for an experiment. Will be used for naming the file with the model weights.")
+
     args = parser.parse_args()
 
     with open(args.config_yml) as f:
@@ -83,8 +92,10 @@ if __name__ == "__main__":
     # DATASET & DATALOADER
     # ------------------------------------------------------------------------
     if args.model == "rva":
+        # RvA treats history as sequences of turns
         mode = 'seq'
     elif args.model == "lf" or args.model == "san":
+        # Other models treat history as concatenation of all turns
         mode = 'concat'
     else:
         raise ValueError("Unknown model")
@@ -134,10 +145,14 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------------
     # LOGGING
     # ------------------------------------------------------------------------
-    experiment_name = "BERT"
+    experiment_name = f"{args.model}_{args.label}_{datetime.today().strftime('%Y-%m-%d-%H:%M:%S')}"
 
     # TensorBoard outputs
-    writer = SummaryWriter(log_dir="./logs/" + experiment_name)
+    log_dir = args.log_dir
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+    experiment_logs = os.path.join(log_dir, experiment_name)
+    writer = SummaryWriter(log_dir=experiment_logs)
 
     # Saving weights
     model_path = os.path.join(args.output_dir, 'weights_{}.pt'.format(experiment_name))
