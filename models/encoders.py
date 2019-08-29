@@ -408,6 +408,7 @@ class SANEncoder(nn.Module):
 
         # Attention 1st
         region_att_1 = self.tanh(self.image_fc_1(image_features)  +
+                                 self.ques_fc_1(ques_hidden).unsqueeze(1) +
                                  self.hist_fc_1(hist_hidden).unsqueeze(1)) # [BxRxH']
         region_weights_1 = self.softmax(self.fc_att_1(region_att_1)) # [BxRx1]
         weighted_image_1 = (region_weights_1 * image_features).sum(1) # [BxH]
