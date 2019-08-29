@@ -1,10 +1,8 @@
 import json
-import os
 import random
 from itertools import chain
 
 import h5py
-import numpy as np
 import torch
 from nltk import RegexpTokenizer
 from pytorch_transformers import BertModel, BertTokenizer
@@ -15,12 +13,12 @@ from dataset.vocabulary import Vocabulary
 
 
 class CXRVisDialDataset(Dataset):
-    def __init__(self, image_features_dir, dialog_path, vocab_path=None, mode='concat', permute=False, views=['PA']):
+    def __init__(self, image_features_path, dialog_path, vocab_path=None, mode='concat', permute=False):
         """
         A dataset class.
 
         Args:
-            image_features_dir (str): path to image features file/folder?
+            image_features (str): path to image features h5 file
             dialog_path (str): path to .json file with dialog data
             vocab_path (str, optional): path to word counts. If None, BERT vocabulary is used instead
             permute (bool, optional): Whether to permute dialog turns in random order. Defaults to False
@@ -42,7 +40,7 @@ class CXRVisDialDataset(Dataset):
         self.image_ids = self.dialog_reader.image_ids
 
         # Read image vectors
-        self.image_reader = ImageFeaturesReader(image_features_dir, self.image_ids, views)
+        self.image_reader = ImageFeaturesReader(image_features_path, self.image_ids)
 
         # Get all possible questions and answers
         self.questions = self.dialog_reader.visdial_data['data']['questions']
@@ -134,17 +132,17 @@ class CXRVisDialDataset(Dataset):
     
 
 class ImageFeaturesReader(object):
-    def __init__(self, image_features_dir, image_ids, views=["PA"]):
+    def __init__(self, image_features_path, image_ids):
         """
         A class for reading image data.
 
         Args:
-            image_features_dir (str):
+            image_features_path (str): path to image features h5 file
             image_ids (list): Image ids from dialogs to load corresponding image vectors
             views (list, optional): List of views for which image vectors are extracted and concatenated
         """
         self.image_ids = image_ids
-        self.image_vectors = self._load(image_features_dir, views=views)
+        self.image_vectors = self._load(image_features_path)
 
     def __getitem__(self, image_id):
         return self.image_vectors[image_id]
@@ -152,22 +150,20 @@ class ImageFeaturesReader(object):
     def __len__(self):
         return len(self.image_ids)
     
-    def _load(self, image_features_dir, views):
+    def _load(self, image_features_path):
         print('Loading image vectors...')
         features = {}
-        for view in views:
-            path = os.path.join(image_features_dir, view, 'images.h5')
-            with h5py.File(path, "r") as features_hdf:
-                for image_id in tqdm(self.image_ids, desc=view):
-                    try:
-                        image_id_features = features_hdf.get(image_id).value
+        with h5py.File(image_features_path, "r") as features_hdf:
+            for image_id in tqdm(self.image_ids):
+                try:
+                    image_id_features = features_hdf.get(image_id).value
 
-                        # Image vectors are either concatenated regions or densenet/resnet penultimate layers
-                        if image_id_features.shape[0] == 11 or len(image_id_features.shape) == 3:
-                            features[image_id] = image_id_features
-                    except Exception:
-                        print(f"Vector not found for image {image_id}")
-            print(f'Loaded {len(self.image_ids)} image vectors.')
+                    # Image vectors are either concatenated regions or densenet/resnet penultimate layers
+                    if image_id_features.shape[0] == 11 or len(image_id_features.shape) == 3:
+                        features[image_id] = image_id_features
+                except Exception:
+                    print(f"Vector not found for image {image_id}")
+        print(f'Loaded {len(self.image_ids)} image vectors.')
         return features
 
 class DialogReader(object):

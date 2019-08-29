@@ -2,14 +2,13 @@ import argparse
 import yaml
 
 import torch
-from pytorch_transformers import BertTokenizer
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from dataset.dataset import CXRVisDialDataset
 from dataset.vocabulary import Vocabulary
 from models.models import LateFusionModel, RecursiveAttentionModel, StackedAttentionModel
-from utils import report_metric, load_embeddings, match_embeddings
+from utils import report_metric
 
 
 
@@ -23,7 +22,7 @@ if __name__ == "__main__":
                         required=False,
                         help="Location of the test json file")
 
-    parser.add_argument("--img_feats_test",
+    parser.add_argument("--test_img_feats",
                         required=False,
                         help="Location of test images features")
 
@@ -66,7 +65,7 @@ if __name__ == "__main__":
     # use them for initializing the embedding layer. Otherwise, use BERT
     train_vocabulary = Vocabulary(args.word_counts)
 
-    test_dataset = CXRVisDialDataset(args.img_feats_test, args.test_json, args.word_counts, mode, views=config['views'])
+    test_dataset = CXRVisDialDataset(args.test_img_feats, args.test_json, args.word_counts, mode)
     test_dataloader = DataLoader(test_dataset, batch_size=config['batch_size'])
 
     # ------------------------------------------------------------------------

@@ -36,11 +36,11 @@ if __name__ == "__main__":
                         required=True,
                         help="Location of the val json file")
 
-    parser.add_argument("--train_img_feats_dir",
+    parser.add_argument("--train_img_feats",
                         required=True,
                         help="Location of train image features folder")
 
-    parser.add_argument("--val_img_feats_dir",
+    parser.add_argument("--val_img_feats",
                         required=True,
                         help="Location of val image features folder")
 
@@ -76,9 +76,6 @@ if __name__ == "__main__":
     with open(args.config_yml) as f:
         config = yaml.safe_load(f)
 
-    # For experiments with multiple views where image vectors are concatenated
-    config['img_feature_size'] *= len(config['views'])
-        
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
 
@@ -92,11 +89,11 @@ if __name__ == "__main__":
     else:
         raise ValueError("Unknown model")
 
-    train_dataset = CXRVisDialDataset(args.train_img_feats_dir, args.train_json, args.word_counts, mode, views=config['views'])
-    val_dataset = CXRVisDialDataset(args.val_img_feats_dir, args.val_json, args.word_counts, mode, views=config['views'])
+    train_dataset = CXRVisDialDataset(args.train_img_feats, args.train_json, args.word_counts, mode)
+    val_dataset = CXRVisDialDataset(args.val_img_feats, args.val_json, args.word_counts, mode)
 
-    train_dataloader = DataLoader(train_dataset, batch_size=config['batch_size'])
-    val_dataloader = DataLoader(val_dataset, batch_size=config['batch_size'])  
+    train_dataloader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=config['batch_size'], shuffle=True)
 
     # ------------------------------------------------------------------------
     # SETUP
@@ -121,20 +118,23 @@ if __name__ == "__main__":
             embeddings = None
 
     if args.model == "lf":
-        model = LateFusionModel(config, train_dataset.vocabulary, args.embeddings)
+        model = LateFusionModel(config, train_dataset.vocabulary, embeddings)
     elif args.model == "rva":
         model = RecursiveAttentionModel(config, train_dataset.vocabulary, embeddings)
     elif args.model == "san":
         model = StackedAttentionModel(config, train_dataset.vocabulary, embeddings, use_bert, bert_path)
     
     model = model.to(device)
-    criterion = nn.CrossEntropyLoss(weight=torch.Tensor([5, 5, 10, 1]).to(device))
+
+    # Weights of the loss tend to affect the performance (especially SAN). Adjust if needed
+    weight = torch.Tensor([5, 5, 10, 1]).to(device)
+    criterion = nn.CrossEntropyLoss(weight=weight)
     optimizer = optim.Adam(model.parameters(), lr=config['learning_rate'])
 
     # ------------------------------------------------------------------------
     # LOGGING
     # ------------------------------------------------------------------------
-    experiment_name = "san_aggressive_emb_frozen_resnet_PA"
+    experiment_name = "BERT"
 
     # TensorBoard outputs
     writer = SummaryWriter(log_dir="./logs/" + experiment_name)
