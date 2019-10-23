@@ -37,7 +37,7 @@ For testing a trained model run the `evaluate.py` script as:
 ```
 python evaluate.py \
     --test_json <path_to_visdial_json>
-    --test_img_feats <path_to_train_img_features>
+    --test_img_feats <path_to_test_img_features>
     --word_counts <path_to_train_word_count>
     --model_path <path_to_saved_model_weights>
     --model lf
