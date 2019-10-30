@@ -37,6 +37,10 @@ if __name__ == "__main__":
     parser.add_argument("--model_path",
                         required=True,
                         help="Output location where the weights are stored")
+    
+    parser.add_argument("--embeddings",
+                        default=None,
+                        help="Whether pretrained embeddings should be used. If yes, the argument is a path to a pickled file.")
 
     parser.add_argument("--model",
                         default="lf",
